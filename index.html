@@ -1,0 +1,880 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Modern LifeOS</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://unpkg.com/lucide@latest"></script>
+    <style>
+        /* Custom CSS for the black background and moving shapes */
+        body {
+            font-family: 'Inter', sans-serif;
+            overflow-x: hidden;
+            background-color: #000;
+        }
+
+        /* --- BACKGROUND SHAPES (Moving Geometric Shapes) --- */
+        #bg-shapes {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            z-index: -1;
+            overflow: hidden;
+            opacity: 0.1;
+            filter: blur(50px);
+        }
+
+        .shape {
+            position: absolute;
+            border-radius: 50%;
+            animation: moveShape 20s infinite alternate ease-in-out;
+        }
+
+        .shape-1 { top: 10%; left: 5%; width: 200px; height: 200px; background-color: #f97316; }
+        .shape-2 { bottom: 20%; right: 15%; width: 300px; height: 300px; background-color: #0ea5e9; }
+        .shape-3 { top: 50%; left: 40%; width: 150px; height: 150px; background-color: #10b981; }
+        .shape-4 { bottom: 5%; left: 30%; width: 250px; height: 250px; background-color: #d946ef; }
+
+        @keyframes moveShape {
+            0% { transform: translate(0, 0) scale(1); }
+            50% { transform: translate(150px, -75px) scale(1.1) rotate(10deg); }
+            100% { transform: translate(-50px, 100px) scale(0.9); }
+        }
+
+        /* --- LAYOUT AND UTILITY --- */
+        #main-content {
+            min-height: calc(100vh - 80px); /* Full height minus header */
+            padding-top: 2rem;
+            padding-bottom: 2rem;
+        }
+
+        /* News Box Styling */
+        #news-box {
+            transition: all 0.5s ease-in-out;
+            cursor: pointer;
+            z-index: 50;
+        }
+
+        .news-expanded {
+            position: fixed !important;
+            top: 50% !important;
+            left: 50% !important;
+            transform: translate(-50%, -50%);
+            width: min(90%, 800px) !important;
+            height: min(80vh, 700px) !important;
+            padding: 2rem !important;
+            background-color: #1a1a1a !important;
+            border: 2px solid #3b82f6 !important;
+        }
+
+        /* Sidebar Styling (Task 1) */
+        #sidebar {
+            transition: transform 0.3s ease-in-out;
+            /* Start hidden to the left */
+            transform: translateX(-100%);
+            z-index: 60;
+        }
+
+        .sidebar-visible {
+            transform: translateX(0);
+        }
+    </style>
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getFirestore, doc, getDoc, addDoc, setDoc, updateDoc, deleteDoc, onSnapshot, collection, query, where, getDocs, serverTimestamp, setLogLevel } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+
+        // Global variables for Firebase and App configuration
+        const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+        const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : null;
+        const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
+
+        let db, auth, currentUserId;
+        let currentView = 'work-view'; // Track current view
+
+        // Utility: Generate a random ID if no auth token is available
+        const generateRandomId = () => `anon-${Math.random().toString(36).substring(2, 9)}`;
+
+        // Firestore Paths (Private Data)
+        const getUserCollectionPath = (collectionName) => {
+            if (!currentUserId) return;
+            return `artifacts/${appId}/users/${currentUserId}/${collectionName}`;
+        };
+
+        // Initialize Firebase (Keeping the original logic for functionality)
+        const initFirebase = async () => {
+             // ... [Original Firebase Initialization Logic remains here] ...
+            if (!firebaseConfig) {
+                console.error("Firebase configuration is missing.");
+                return;
+            }
+            try {
+                const app = initializeApp(firebaseConfig);
+                db = getFirestore(app);
+                auth = getAuth(app);
+                setLogLevel('Debug');
+
+                onAuthStateChanged(auth, async (user) => {
+                    if (user) {
+                        currentUserId = user.uid;
+                    } else {
+                        if (initialAuthToken) {
+                            await signInWithCustomToken(auth, initialAuthToken);
+                        } else {
+                            const anonUser = await signInAnonymously(auth);
+                            currentUserId = anonUser.user.uid;
+                        }
+                    }
+                    if (currentUserId) {
+                        document.getElementById('user-welcome').textContent = currentUserId;
+                        initAppListeners(); // Start listening to data once authenticated
+                    }
+                });
+
+            } catch (error) {
+                console.error("Error initializing Firebase:", error);
+                // Fallback for UI if Firebase fails
+                currentUserId = generateRandomId();
+                document.getElementById('user-welcome').textContent = `Anon ID: ${currentUserId.substring(0, 10)}...`;
+                document.getElementById('db-status').textContent = 'DB Offline';
+                document.getElementById('db-status').classList.add('bg-red-500');
+            }
+        };
+
+        // --- GLOBAL APP STATE & UI LOGIC ---
+
+        /**
+         * Task 2 & 3: Refactored Navigation for Dynamic Content Rendering
+         * (Performance Improvement)
+         */
+        const viewRenderers = {
+            'work-view': renderWorkView,
+            'home-view': renderHomeView,
+            'casual-view': renderCasualView,
+            'ai-assistant-view': renderAIAssistantView,
+        };
+
+        const navigateTo = (viewId) => {
+            currentView = viewId;
+            const mainContent = document.getElementById('main-content');
+            // Clear current content
+            mainContent.innerHTML = '';
+
+            // Render the content for the new view
+            const renderer = viewRenderers[viewId];
+            if (renderer) {
+                mainContent.insertAdjacentHTML('afterbegin', renderer());
+                // Re-create icons and close sidebar
+                lucide.createIcons();
+                document.getElementById('sidebar').classList.remove('sidebar-visible');
+            } else {
+                mainContent.innerHTML = `<div class="text-xl text-red-500">View not found: ${viewId}</div>`;
+            }
+
+            // Highlight active button in sidebar
+            document.querySelectorAll('.nav-button').forEach(btn => {
+                btn.classList.remove('bg-blue-600', 'text-white');
+                btn.classList.add('text-gray-300');
+            });
+            document.getElementById(`nav-${viewId}`).classList.add('bg-blue-600', 'text-white');
+            document.getElementById(`nav-${viewId}`).classList.remove('text-gray-300');
+        };
+
+        window.navigateTo = navigateTo; // Make navigation accessible globally
+
+        // Sidebar Toggle (Task 1)
+        window.toggleSidebar = () => {
+            document.getElementById('sidebar').classList.toggle('sidebar-visible');
+        };
+
+        // News Box Toggle (Article content removed) (Kept original logic for behavior)
+        let isNewsExpanded = false;
+        window.toggleNewsBox = (event) => {
+            // ... [Original toggleNewsBox Logic remains here] ...
+            if (event && event.target.closest('button')) return;
+
+            const box = document.getElementById('news-box');
+            isNewsExpanded = !isNewsExpanded;
+
+            if (isNewsExpanded) {
+                box.classList.add('news-expanded');
+                box.innerHTML = `
+                    <div class="flex justify-between items-center mb-4">
+                        <h2 class="text-2xl font-bold text-white">Latest News Feed</h2>
+                        <button onclick="window.toggleNewsBox();" class="text-gray-400 hover:text-white transition">
+                            <i data-lucide="x" class="w-8 h-8"></i>
+                        </button>
+                    </div>
+                    <div id="news-content-expanded" class="h-full overflow-y-auto text-gray-300 pr-2">
+                        <p class="mt-8 text-center text-xl text-gray-500">
+                            The news feed is currently empty.
+                        </p>
+                        <p class="mt-2 text-center text-sm text-gray-600">
+                            New system updates and announcements will appear here.
+                        </p>
+                    </div>
+                `;
+                lucide.createIcons();
+            } else {
+                box.classList.remove('news-expanded');
+                box.innerHTML = `
+                    <div class="flex justify-center items-center h-full">
+                        <span class="text-lg font-semibold text-white">NEWS</span>
+                    </div>
+                `;
+            }
+        };
+
+        // --- FIRESTORE DATA LISTENERS (Kept original logic for functionality) ---
+        const updatePill = (elementId, count) => {
+            const pill = document.getElementById(elementId);
+            if (pill) {
+                if (count > 0) {
+                    pill.textContent = count;
+                    pill.classList.remove('hidden');
+                } else {
+                    pill.classList.add('hidden');
+                }
+            }
+        };
+
+        const initAppListeners = () => {
+            if (!db || !currentUserId) return;
+            const homePath = getUserCollectionPath('home_tasks');
+            const workPath = getUserCollectionPath('requests');
+            const emailPath = getUserCollectionPath('emails');
+            const contactsPath = getUserCollectionPath('contacts');
+            const projectsPath = getUserCollectionPath('projects');
+            const casualPath = getUserCollectionPath('casual_content');
+
+            // 1. WORK VIEW PILLS
+            // ... [Original WORK VIEW PILLS Logic remains here] ...
+            if (emailPath) onSnapshot(collection(db, emailPath), (snapshot) => {
+                updatePill('emails-pill', snapshot.docs.filter(doc => !doc.data().read).length);
+            }, (error) => console.error("Emails snapshot error:", error));
+
+            if (workPath) onSnapshot(collection(db, workPath), (snapshot) => {
+                updatePill('requests-pill', snapshot.docs.filter(doc => doc.data().status === 'Pending').length);
+            }, (error) => console.error("Requests snapshot error:", error));
+
+            if (contactsPath) onSnapshot(collection(db, contactsPath), (snapshot) => {
+                updatePill('contacts-pill', snapshot.size);
+            }, (error) => console.error("Contacts snapshot error:", error));
+
+            if (projectsPath) onSnapshot(collection(db, projectsPath), (snapshot) => {
+                // Pill removed per user request, but count remains if needed
+            }, (error) => console.error("Projects snapshot error:", error));
+
+
+            // 2. HOME VIEW PILLS & RENDERING (Task 4)
+            if (homePath) {
+                onSnapshot(collection(db, homePath), (snapshot) => {
+                    const tasks = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+
+                    // PILL LOGIC FOR HOME
+                    const expiringCount = tasks.filter(t => t.type === 'grocery' && t.date && new Date(t.date) < new Date(Date.now() + 86400000 * 3)).length; // < 3 days
+                    const recipesCount = tasks.filter(t => t.type === 'recipe').length;
+                    const cleaningCount = tasks.filter(t => t.type === 'cleaning' && t.status !== 'Done').length;
+                    const financeCount = tasks.filter(t => t.type === 'finance' && t.status !== 'Paid').length;
+
+                    updatePill('recipes-pill', recipesCount);
+                    updatePill('cleaning-pill', cleaningCount);
+                    updatePill('groceries-pill', expiringCount);
+                    updatePill('finance-pill', financeCount);
+
+                    if (currentView === 'home-view') {
+                        window.analyzeHomeTasks(tasks); // Trigger AI analysis
+                        renderHomeTasks(tasks); // Render for UI
+                    }
+                }, (error) => console.error("Home tasks snapshot error:", error));
+            }
+
+
+            // 3. CASUAL VIEW CONTENT (Task 5)
+            if (casualPath) {
+                onSnapshot(doc(db, casualPath, 'main'), (docSnapshot) => {
+                    const content = docSnapshot.exists() ? docSnapshot.data().text : '';
+                    if (currentView === 'casual-view') {
+                        renderCasualContent(content);
+                    } else {
+                        // Store the latest content if not on the view, so it can be loaded instantly
+                        window.latestCasualContent = content;
+                    }
+                }, (error) => console.error("Casual content snapshot error:", error));
+            }
+        };
+
+        // --- AI ASSISTANT CHAT LOGIC (Task 6) ---
+        // ... [Original AI Chat Logic remains here] ...
+        const AI_MODEL = 'gemini-2.5-flash-preview-09-2025';
+        const AI_API_URL = `https://generativelanguage.googleapis.com/v1beta/models/${AI_MODEL}:generateContent?key=`;
+        const AI_SYSTEM_PROMPT = "You are a friendly, helpful, and concise AI Assistant integrated into a user's personal workspace. Respond to queries clearly and briefly. Use markdown sparingly.";
+
+        const chatHistory = [];
+        let isAILoading = false;
+
+        window.sendChatMessage = async () => {
+            // ... [Original sendChatMessage Logic remains here] ...
+            if (isAILoading) return;
+
+            const input = document.getElementById('chat-input');
+            const message = input.value.trim();
+            if (!message) return;
+
+            chatHistory.push({ role: 'user', text: message });
+            appendMessageToUI('user', message);
+            input.value = '';
+            isAILoading = true;
+            document.getElementById('ai-send-btn').innerHTML = '<i data-lucide="loader-circle" class="w-6 h-6 animate-spin"></i>';
+            lucide.createIcons();
+
+            try {
+                const payload = {
+                    contents: chatHistory.map(msg => ({ role: msg.role === 'user' ? 'user' : 'model', parts: [{ text: msg.text }] })),
+                    systemInstruction: { parts: [{ text: AI_SYSTEM_PROMPT }] },
+                };
+
+                const maxRetries = 3;
+                let response;
+
+                for (let i = 0; i < maxRetries; i++) {
+                    try {
+                        response = await fetch(AI_API_URL, {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify(payload)
+                        });
+                        if (response.ok) break;
+
+                    } catch (error) {
+                        if (i === maxRetries - 1) throw error;
+                        await new Promise(resolve => setTimeout(resolve, Math.pow(2, i) * 1000));
+                    }
+                }
+
+                if (!response || !response.ok) {
+                    throw new Error(`API request failed with status: ${response ? response.status : 'No response'}`);
+                }
+
+                const result = await response.json();
+                const aiResponseText = result.candidates?.[0]?.content?.parts?.[0]?.text || "Sorry, I couldn't process that request.";
+
+                chatHistory.push({ role: 'model', text: aiResponseText });
+                appendMessageToUI('model', aiResponseText);
+
+            } catch (error) {
+                console.error("Gemini API call failed:", error);
+                appendMessageToUI('model', "Error: Failed to connect to AI assistant. Please try again.");
+            } finally {
+                isAILoading = false;
+                document.getElementById('ai-send-btn').innerHTML = '<i data-lucide="send" class="w-6 h-6"></i>';
+                lucide.createIcons();
+            }
+        };
+
+        const appendMessageToUI = (role, text) => {
+            // ... [Original appendMessageToUI Logic remains here] ...
+            const container = document.getElementById('chat-container');
+            if (!container) return;
+
+            const alignment = role === 'user' ? 'justify-end' : 'justify-start';
+            const bgColor = role === 'user' ? 'bg-blue-600' : 'bg-gray-700';
+            const avatar = role === 'user' ? 'U' : 'AI';
+
+            const messageHtml = `
+                <div class="flex ${alignment} mb-4">
+                    <div class="max-w-xs md:max-w-md lg:max-w-lg flex items-start">
+                        ${role === 'model' ? `<div class="w-8 h-8 rounded-full bg-indigo-500 flex items-center justify-center text-xs font-bold mr-2 flex-shrink-0">${avatar}</div>` : ''}
+                        <div class="p-3 rounded-xl shadow-lg ${bgColor} text-white whitespace-pre-wrap">
+                            ${text}
+                        </div>
+                        ${role === 'user' ? `<div class="w-8 h-8 rounded-full bg-teal-500 flex items-center justify-center text-xs font-bold ml-2 flex-shrink-0">${avatar}</div>` : ''}
+                    </div>
+                </div>
+            `;
+            container.insertAdjacentHTML('beforeend', messageHtml);
+            container.scrollTop = container.scrollHeight;
+        };
+
+
+        // --- HOME ASSISTANT LOGIC (AI REMINDER & NOTIFICATION) (Task 4) ---
+        // ... [Original Home AI Logic remains here] ...
+        let isAITaskLoading = false;
+        const HOME_SYSTEM_PROMPT = "You are a proactive, prioritized Home Manager AI. Analyze the list of tasks. Respond with a single, short paragraph (max 3 sentences) focusing on the most urgent or actionable item first. Priority Order: (1) Items expiring/overdue within 3 days (Grocery/Finance). (2) Cooking tasks (offer recipe/timer tip). (3) Cleaning tasks (offer a simple, effective tip). If nothing is urgent, give a general encouraging tip.";
+
+        window.analyzeHomeTasks = async (tasks) => {
+            const statusBox = document.getElementById('home-ai-tip');
+            if (!statusBox) return; // Guard for dynamic rendering
+
+            if (isAITaskLoading) return;
+
+            if (!tasks.length) {
+                statusBox.textContent = "No tasks to analyze. Add a task to get proactive AI tips!";
+                return;
+            }
+
+            const taskListText = tasks.map(t =>
+                `- ${t.name} (Type: ${t.type}, Due/Expiring: ${t.date || 'N/A'})`
+            ).join('\n');
+
+            const userQuery = `Analyze the following home tasks and give a prioritized, proactive suggestion:\n${taskListText}`;
+            isAITaskLoading = true;
+            statusBox.textContent = "Analyzing tasks, please wait...";
+
+            try {
+                const payload = {
+                    contents: [{ parts: [{ text: userQuery }] }],
+                    systemInstruction: { parts: [{ text: HOME_SYSTEM_PROMPT }] },
+                };
+
+                const maxRetries = 3;
+                let response;
+
+                for (let i = 0; i < maxRetries; i++) {
+                    try {
+                        response = await fetch(AI_API_URL, {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify(payload)
+                        });
+                        if (response.ok) break;
+                    } catch (error) {
+                        if (i === maxRetries - 1) throw error;
+                        await new Promise(resolve => setTimeout(resolve, Math.pow(2, i) * 1000));
+                    }
+                }
+
+                if (!response || !response.ok) {
+                    throw new Error(`API request failed with status: ${response ? response.status : 'No response'}`);
+                }
+
+                const result = await response.json();
+                const aiTip = result.candidates?.[0]?.content?.parts?.[0]?.text || "AI analysis is currently unavailable.";
+                statusBox.textContent = aiTip;
+
+            } catch (error) {
+                console.error("Home AI analysis failed:", error);
+                statusBox.textContent = "Error running Home AI analysis.";
+            } finally {
+                isAITaskLoading = false;
+            }
+        };
+
+        // --- HOME TASK CRUD & RENDERING (Task 4) ---
+        window.saveHomeTask = async () => {
+            // ... [Original saveHomeTask Logic remains here] ...
+            if (!db || !currentUserId) { window.showMessage("Database not ready.", 'error'); return; }
+            const name = document.getElementById('task-name').value.trim();
+            const date = document.getElementById('task-date').value;
+            const type = document.getElementById('task-type').value;
+
+            if (!name) { window.showMessage("Task name is required.", 'error'); return; }
+
+            const task = { name, date, type, status: 'Active', createdAt: serverTimestamp() };
+            try {
+                const collectionPath = getUserCollectionPath('home_tasks');
+                await addDoc(collection(db, collectionPath), task);
+                document.getElementById('task-name').value = '';
+                document.getElementById('task-date').value = '';
+                window.showMessage("Home task added!");
+            } catch (e) {
+                console.error("Error adding document: ", e);
+                window.showMessage("Error adding task.", 'error');
+            }
+        };
+
+        const renderHomeTasks = (tasks) => {
+            // ... [Original renderHomeTasks Logic remains here] ...
+            const list = document.getElementById('home-task-list');
+            if (!list) return; // Guard for dynamic rendering
+
+            list.innerHTML = '';
+            // Sort: Overdue/Expiring first, then by date, then by name
+            tasks.sort((a, b) => {
+                const dateA = a.date ? new Date(a.date).getTime() : Infinity;
+                const dateB = b.date ? new Date(b.date).getTime() : Infinity;
+                return dateA - dateB;
+            });
+
+            tasks.forEach(task => {
+                const threeDaysInMs = 86400000 * 3;
+                const now = Date.now();
+                const taskDate = task.date ? new Date(task.date).getTime() : null;
+
+                const isExpiringSoon = taskDate && task.type === 'grocery' && taskDate > now && taskDate < now + threeDaysInMs;
+                const isOverdue = taskDate && taskDate < now;
+
+                let bgColor = 'bg-gray-800';
+                let dateColor = 'text-gray-400';
+                if (isOverdue) {
+                    bgColor = 'bg-red-900 border border-red-500';
+                    dateColor = 'text-red-400 font-bold';
+                } else if (isExpiringSoon) {
+                    bgColor = 'bg-yellow-900 border border-yellow-500';
+                    dateColor = 'text-yellow-400 font-bold';
+                }
+
+                const item = document.createElement('li');
+                item.className = `flex justify-between items-center p-3 rounded-lg mb-2 shadow-md ${bgColor}`;
+                item.innerHTML = `
+                    <div class="flex-1">
+                        <span class="font-medium text-white">${task.name}</span>
+                        <div class="text-xs text-gray-400 mt-0.5">
+                            Type: ${task.type} |
+                            ${task.date ? `Due/Expiring: <span class="${dateColor}">${task.date}</span>` : 'No Date Set'}
+                        </div>
+                    </div>
+                    <button onclick="window.deleteHomeTask('${task.id}')" class="text-gray-400 hover:text-red-400 ml-4 transition">
+                        <i data-lucide="trash-2" class="w-5 h-5"></i>
+                    </button>
+                `;
+                list.appendChild(item);
+            });
+            lucide.createIcons();
+        };
+
+        window.deleteHomeTask = async (taskId) => {
+            // ... [Original deleteHomeTask Logic remains here] ...
+            if (!db || !currentUserId) { window.showMessage("Database not ready.", 'error'); return; }
+            try {
+                const collectionPath = getUserCollectionPath('home_tasks');
+                await deleteDoc(doc(db, collectionPath, taskId));
+                window.showMessage("Task deleted.");
+            } catch (e) {
+                console.error("Error deleting document: ", e);
+                window.showMessage("Error deleting task.", 'error');
+            }
+        };
+
+
+        // --- CASUAL CONTENT (FULLY CUSTOMIZABLE) LOGIC (Task 5) ---
+        window.saveCasualContent = async () => {
+            // ... [Original saveCasualContent Logic remains here] ...
+            if (!db || !currentUserId) { console.error("DB not ready."); return; }
+            const content = document.getElementById('casual-textarea').value.trim();
+
+            try {
+                const collectionPath = getUserCollectionPath('casual_content');
+                const docRef = doc(db, collectionPath, 'main');
+                await setDoc(docRef, { text: content, updatedAt: serverTimestamp() });
+                const status = document.getElementById('casual-status');
+                status.textContent = 'Content saved!';
+                status.classList.remove('hidden', 'opacity-0');
+                status.classList.add('opacity-100');
+                setTimeout(() => {
+                    status.classList.remove('opacity-100');
+                    status.classList.add('opacity-0');
+                    setTimeout(() => status.classList.add('hidden'), 300);
+                }, 3000);
+            } catch (e) {
+                console.error("Error saving document: ", e);
+            }
+        };
+
+        const renderCasualContent = (content) => {
+            const textarea = document.getElementById('casual-textarea');
+            if (textarea) {
+                textarea.value = content || 'Start typing your fully customizable content here. It will automatically save.';
+            }
+            window.latestCasualContent = content; // Update cache
+        };
+
+        // --- WORKPLACE CORE ACTIONS (Simulated DB calls) ---
+        window.handleWorkAction = async (action) => {
+            // ... [Original handleWorkAction Logic remains here] ...
+            if (!db || !currentUserId) { window.showMessage("Database not ready.", 'error'); return; }
+            const payload = {
+                action: action,
+                status: 'Pending',
+                createdAt: serverTimestamp(),
+            };
+            const collectionName = (action.includes('Report') || action.includes('Proposal')) ? 'requests' : 'projects';
+
+            try {
+                const collectionPath = getUserCollectionPath(collectionName);
+                await addDoc(collection(db, collectionPath), payload);
+                window.showMessage(`${action} submitted successfully! Check the Requests/Projects box for updates.`);
+            } catch (e) {
+                console.error(`Error submitting ${action}: `, e);
+                window.showMessage(`Error: Could not submit ${action}.`, 'error');
+            }
+        };
+
+        // Custom Message Box instead of alert()
+        window.showMessage = (message, type = 'success') => {
+            // ... [Original showMessage Logic remains here] ...
+            const msgBox = document.getElementById('custom-message');
+            msgBox.textContent = message;
+            msgBox.className = `fixed top-4 right-4 p-4 rounded-lg shadow-xl text-white transition-opacity duration-300 ${type === 'success' ? 'bg-green-600' : 'bg-red-600'} z-[100]`;
+            msgBox.classList.remove('opacity-0', 'hidden');
+            msgBox.classList.add('opacity-100');
+            setTimeout(() => {
+                msgBox.classList.remove('opacity-100');
+                msgBox.classList.add('opacity-0');
+                setTimeout(() => msgBox.classList.add('hidden'), 300);
+            }, 5000);
+        };
+
+        // Initialize the app on load
+        window.onload = () => {
+            initFirebase();
+            lucide.createIcons();
+            // Start by navigating to the work view to render its content
+            navigateTo('work-view');
+        };
+
+        // --- DYNAMIC VIEW HTML GENERATION (Performance Optimization) ---
+
+        const commonCardStyle = "bg-gray-900 p-6 rounded-xl shadow-lg border border-gray-700 h-full flex flex-col";
+
+        // Work View (Task 3) - Base Template
+        function renderWorkView() {
+            return `
+                <div class="grid grid-cols-1 md:grid-cols-3 lg:grid-cols-4 gap-6">
+
+                    <div id="news-box" onclick="window.toggleNewsBox(event)"
+                        class="${commonCardStyle} md:col-span-1 min-h-[150px] bg-blue-900/40 border-blue-700/50 hover:bg-blue-900/60 transition duration-300">
+                        <div class="flex justify-center items-center h-full">
+                            <span class="text-lg font-semibold text-white">NEWS</span>
+                        </div>
+                    </div>
+
+                    <div class="${commonCardStyle} md:col-span-2 lg:col-span-3">
+                        <h2 class="text-xl font-bold text-white mb-4">Core Workplace Status</h2>
+                        <div class="grid grid-cols-2 lg:grid-cols-4 gap-4 flex-grow">
+                            ${renderWorkMetric('Emails', 'inbox', 'emails-pill', 'text-yellow-400')}
+                            ${renderWorkMetric('Requests', 'send', 'requests-pill', 'text-red-400')}
+                            ${renderWorkMetric('Projects', 'columns', 'projects-pill', 'text-green-400', 'hidden')}
+                            ${renderWorkMetric('Contacts', 'users', 'contacts-pill', 'text-blue-400')}
+                        </div>
+                        <p class="text-sm text-gray-500 mt-4">Real-time counts from your linked data sources.</p>
+                    </div>
+
+                    <div class="${commonCardStyle} md:col-span-1">
+                        <h2 class="text-xl font-bold text-white mb-4">Quick Actions</h2>
+                        <div class="space-y-3">
+                            ${renderActionButton('Generate Report', 'file-text', 'handleWorkAction("Generate Report")', 'bg-indigo-600')}
+                            ${renderActionButton('Create Task', 'check-circle', 'handleWorkAction("Create Task")', 'bg-emerald-600')}
+                            ${renderActionButton('Send Proposal', 'send-horizontal', 'handleWorkAction("Send Proposal")', 'bg-orange-600')}
+                        </div>
+                    </div>
+
+                    <div class="${commonCardStyle} md:col-span-2">
+                        <h2 class="text-xl font-bold text-white mb-4">Upcoming Schedule</h2>
+                        <div class="space-y-3">
+                            <p class="text-gray-400 flex items-center"><i data-lucide="clock" class="w-5 h-5 mr-2 text-blue-400"></i> **10:00 AM**: Standup Meeting (Zoom)</p>
+                            <p class="text-gray-400 flex items-center"><i data-lucide="clock" class="w-5 h-5 mr-2 text-blue-400"></i> **1:00 PM**: Project Alpha Review</p>
+                            <p class="text-gray-400 flex items-center"><i data-lucide="clock" class="w-5 h-5 mr-2 text-blue-400"></i> **3:30 PM**: Client Demo Prep</p>
+                        </div>
+                    </div>
+
+                    <div class="${commonCardStyle} md:col-span-1">
+                        <h2 class="text-xl font-bold text-white mb-4">AI Tools</h2>
+                        <div class="space-y-3">
+                            ${renderActionButton('Summarize Email', 'bot', 'window.showMessage("Summarizing...", "success")', 'bg-purple-600')}
+                            ${renderActionButton('Draft Reply', 'edit', 'window.showMessage("Drafting...", "success")', 'bg-pink-600')}
+                        </div>
+                    </div>
+
+                </div>
+            `;
+        }
+
+        // Home View (Task 4) - New Content
+        function renderHomeView() {
+            return `
+                <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+
+                    <div class="${commonCardStyle} lg:col-span-3 bg-indigo-900/40 border-indigo-700/50">
+                        <h2 class="text-2xl font-bold text-white mb-3 flex items-center">
+                            <i data-lucide="cpu" class="w-7 h-7 mr-3 text-indigo-400"></i> Home Assistant Proactive Tip
+                        </h2>
+                        <p id="home-ai-tip" class="text-lg text-indigo-200">${currentUserId ? 'Analyzing tasks, please wait...' : 'Connect to the database to enable AI analysis.'}</p>
+                    </div>
+
+                    <div class="${commonCardStyle} lg:col-span-1">
+                        <h2 class="text-xl font-bold text-white mb-4">Task Categories</h2>
+                        <div class="grid grid-cols-2 gap-4">
+                            ${renderWorkMetric('Groceries/Expiring', 'banana', 'groceries-pill', 'text-yellow-400')}
+                            ${renderWorkMetric('Recipes/Cooking', 'chef-hat', 'recipes-pill', 'text-orange-400')}
+                            ${renderWorkMetric('Cleaning', 'cleaning-bucket', 'cleaning-pill', 'text-cyan-400')}
+                            ${renderWorkMetric('Finance/Bills', 'credit-card', 'finance-pill', 'text-red-400')}
+                        </div>
+                    </div>
+
+                    <div class="${commonCardStyle} lg:col-span-2">
+                        <h2 class="text-xl font-bold text-white mb-4">Add New Home Task</h2>
+                        <div class="space-y-4">
+                            <input type="text" id="task-name" placeholder="Task Name (e.g., Milk, Dinner with Chicken, Clean Bathroom)"
+                                class="w-full p-3 rounded-lg bg-gray-700 border border-gray-600 text-white placeholder-gray-400 focus:ring-blue-500 focus:border-blue-500">
+                            <div class="grid grid-cols-2 gap-4">
+                                <select id="task-type" class="w-full p-3 rounded-lg bg-gray-700 border border-gray-600 text-white focus:ring-blue-500 focus:border-blue-500">
+                                    <option value="grocery">Grocery (Expiring)</option>
+                                    <option value="recipe">Recipe/Cooking</option>
+                                    <option value="cleaning">Cleaning/Chore</option>
+                                    <option value="finance">Finance/Bill</option>
+                                    <option value="other">Other</option>
+                                </select>
+                                <input type="datetime-local" id="task-date" title="Set a Due/Expiration Date"
+                                    class="w-full p-3 rounded-lg bg-gray-700 border border-gray-600 text-white focus:ring-blue-500 focus:border-blue-500">
+                            </div>
+                            <button onclick="window.saveHomeTask()" class="w-full py-3 rounded-lg text-lg font-semibold bg-blue-600 hover:bg-blue-700 transition">
+                                Add Task
+                            </button>
+                        </div>
+                    </div>
+
+                    <div class="${commonCardStyle} lg:col-span-3">
+                        <h2 class="text-xl font-bold text-white mb-4">Active Home Tasks</h2>
+                        <ul id="home-task-list" class="space-y-2 max-h-96 overflow-y-auto">
+                            <li class="text-center text-gray-500">Loading tasks...</li>
+                        </ul>
+                    </div>
+                </div>
+            `;
+        }
+
+        // Casual View (Task 5) - Fully Customizable
+        function renderCasualView() {
+            const initialContent = window.latestCasualContent || 'Start typing your fully customizable content here. It will automatically save.';
+            return `
+                <div class="${commonCardStyle} min-h-[70vh] flex flex-col">
+                    <h2 class="text-2xl font-bold text-white mb-4 flex items-center">
+                        <i data-lucide="notebook-text" class="w-7 h-7 mr-3 text-green-400"></i> Casual/Custom Notebook
+                    </h2>
+                    <p class="text-gray-400 mb-4">This space is fully customizable. Add, edit, or delete anything. It saves automatically as you type.</p>
+
+                    <textarea id="casual-textarea" oninput="window.saveCasualContent()"
+                        class="flex-grow w-full p-4 rounded-lg bg-gray-800 border border-gray-700 text-white focus:ring-green-500 focus:border-green-500 text-lg resize-none"
+                        placeholder="Start your fully customizable content here...">
+${initialContent}</textarea>
+
+                    <div class="mt-4 flex justify-between items-center">
+                        <button onclick="window.saveCasualContent()" class="py-2 px-4 rounded-lg font-semibold bg-green-600 hover:bg-green-700 transition">
+                            Save Content (Manual)
+                        </button>
+                        <span id="casual-status" class="text-sm text-green-400 opacity-0 hidden transition-opacity duration-300">Content saved!</span>
+                    </div>
+                </div>
+            `;
+        }
+
+        // AI Assistant View (Task 6) - ChatGPT-like Interface
+        function renderAIAssistantView() {
+            return `
+                <div class="${commonCardStyle} min-h-[calc(100vh-140px)] flex flex-col p-0">
+                    <div class="p-4 bg-gray-800 border-b border-gray-700 rounded-t-xl">
+                        <h2 class="text-xl font-bold text-white flex items-center">
+                            <i data-lucide="bot" class="w-6 h-6 mr-2 text-blue-400"></i> Local AI Assistant
+                        </h2>
+                        <p class="text-sm text-gray-400">Integrated local AI for simple, quick assistance. (Model: ${AI_MODEL})</p>
+                    </div>
+
+                    <div id="chat-container" class="flex-grow overflow-y-auto p-4 md:p-6 space-y-4">
+                        <div class="flex justify-start mb-4">
+                            <div class="max-w-xs md:max-w-md lg:max-w-lg flex items-start">
+                                <div class="w-8 h-8 rounded-full bg-indigo-500 flex items-center justify-center text-xs font-bold mr-2 flex-shrink-0">AI</div>
+                                <div class="p-3 rounded-xl shadow-lg bg-gray-700 text-white">Hello! I'm your integrated AI Assistant. How can I help you today?</div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="p-4 bg-gray-800 border-t border-gray-700 rounded-b-xl">
+                        <div class="flex items-center space-x-3">
+                            <input type="text" id="chat-input" placeholder="Ask your local AI assistant..."
+                                onkeydown="if(event.key === 'Enter') window.sendChatMessage()"
+                                class="flex-grow p-3 rounded-lg bg-gray-700 border border-gray-600 text-white placeholder-gray-400 focus:ring-blue-500 focus:border-blue-500">
+                            <button id="ai-send-btn" onclick="window.sendChatMessage()" class="p-3 rounded-lg bg-blue-600 hover:bg-blue-700 text-white transition flex items-center justify-center">
+                                <i data-lucide="send" class="w-6 h-6"></i>
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            `;
+        }
+
+        // Helper function for metric boxes
+        function renderWorkMetric(title, icon, pillId, iconColor, pillClass = '') {
+            return `
+                <div class="p-4 bg-gray-800 rounded-lg shadow-md flex flex-col justify-between">
+                    <div class="flex items-center justify-between mb-2">
+                        <i data-lucide="${icon}" class="w-6 h-6 ${iconColor}"></i>
+                        <span id="${pillId}" class="px-2 py-0.5 text-xs font-bold rounded-full bg-red-600 text-white ${pillClass}">0</span>
+                    </div>
+                    <p class="text-sm font-medium text-gray-300">${title}</p>
+                </div>
+            `;
+        }
+
+        // Helper function for action buttons
+        function renderActionButton(text, icon, action, bgColor) {
+            return `
+                <button onclick="${action}" class="flex items-center w-full py-3 px-4 rounded-lg font-semibold text-white ${bgColor} hover:opacity-90 transition duration-150">
+                    <i data-lucide="${icon}" class="w-5 h-5 mr-3"></i>
+                    ${text}
+                </button>
+            `;
+        }
+    </script>
+</head>
+<body class="bg-black text-white min-h-screen">
+
+    <div id="bg-shapes">
+        <div class="shape shape-1" style="animation-delay: 0s;"></div>
+        <div class="shape shape-2" style="animation-delay: 5s;"></div>
+        <div class="shape shape-3" style="animation-delay: 10s;"></div>
+        <div class="shape shape-4" style="animation-delay: 15s;"></div>
+    </div>
+
+    <div id="custom-message" class="opacity-0 hidden z-[100]"></div>
+
+    <div id="sidebar" class="fixed top-0 left-0 h-full w-64 bg-gray-900 shadow-2xl p-4 pt-20 border-r border-gray-700">
+        <div class="text-xl font-bold mb-8 text-blue-400">Navigation</div>
+        <nav class="space-y-4">
+            <button id="nav-work-view" onclick="navigateTo('work-view')" class="nav-button flex items-center w-full p-3 rounded-lg text-lg text-gray-300 hover:bg-gray-800 transition duration-150">
+                <i data-lucide="briefcase" class="w-6 h-6 mr-3 text-white"></i> Work
+            </button>
+            <button id="nav-home-view" onclick="navigateTo('home-view')" class="nav-button flex items-center w-full p-3 rounded-lg text-lg text-gray-300 hover:bg-gray-800 transition duration-150">
+                <i data-lucide="home" class="w-6 h-6 mr-3 text-white"></i> Home
+            </button>
+            <button id="nav-casual-view" onclick="navigateTo('casual-view')" class="nav-button flex items-center w-full p-3 rounded-lg text-lg text-gray-300 hover:bg-gray-800 transition duration-150">
+                <i data-lucide="notebook-text" class="w-6 h-6 mr-3 text-white"></i> Casual
+            </button>
+            <button id="nav-ai-assistant-view" onclick="navigateTo('ai-assistant-view')" class="nav-button flex items-center w-full p-3 rounded-lg text-lg text-gray-300 hover:bg-gray-800 transition duration-150">
+                <i data-lucide="bot" class="w-6 h-6 mr-3 text-white"></i> AI Assistant
+            </button>
+        </nav>
+        <div class="absolute bottom-4 left-4 text-xs text-gray-500">
+            <span id="db-status">DB Connected</span>
+        </div>
+    </div>
+
+    <header class="h-20 flex items-center justify-between p-4 px-6 bg-gray-900/80 backdrop-blur-sm border-b border-gray-700 sticky top-0 z-50">
+        <button onclick="toggleSidebar()" class="text-white hover:text-blue-400 transition mr-4">
+            <i data-lucide="menu" class="w-8 h-8"></i>
+        </button>
+
+        <h1 class="text-2xl font-extrabold text-transparent bg-clip-text bg-gradient-to-r from-blue-400 to-indigo-500 hidden md:block flex-grow text-center">
+            Modern LifeOS
+        </h1>
+
+        <div class="flex items-center space-x-4 ml-auto">
+            <div class="text-right hidden sm:block">
+                <p class="text-sm text-gray-400">User ID:</p>
+                <p id="user-welcome" class="text-lg font-semibold text-white truncate max-w-[150px]">User</p>
+            </div>
+            <div class="w-10 h-10 rounded-full bg-blue-500 flex items-center justify-center text-white text-xl font-bold shadow-lg">
+                U
+            </div>
+        </div>
+    </header>
+
+    <div id="main-content" class="relative p-4 md:p-8">
+        <div class="text-center text-xl text-gray-500 p-20">Loading application...</div>
+    </div>
+
+</body>
+</html>
